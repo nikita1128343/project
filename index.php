@@ -3,128 +3,46 @@ session_start();
 $is_logged_in = isset($_SESSION['application_id']);
 $user_id = $is_logged_in ? $_SESSION['application_id'] : null;
 
-// Обработка API-запросов
-if (isset($_GET['route'])) {
-    error_reporting(0);
+// ========== ОБРАБОТКА API-ЗАПРОСОВ ==========
+if (isset($_GET['route']) && $_GET['route'] === 'order') {
     header('Content-Type: application/json; charset=UTF-8');
-    try {
-        require_once __DIR__ . '/db.php';
-        require_once __DIR__ . '/order_functions.php';
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['error' => 'Ошибка загрузки модулей']);
-        exit;
-    }
+    require_once __DIR__ . '/db.php';
+    require_once __DIR__ . '/order_functions.php';
 
     $method = $_SERVER['REQUEST_METHOD'];
-    $route = $_GET['route'];
-
-    if ($method === 'POST' && isset($_POST['_method'])) {
-        $method = strtoupper($_POST['_method']);
-    }
-    $input_json = null;
-    if ($method === 'POST' && empty($_POST)) {
-        $input_json = json_decode(file_get_contents('php://input'), true);
-        if (isset($input_json['_method'])) {
-            $method = strtoupper($input_json['_method']);
-            unset($input_json['_method']);
-        }
+    
+    // Читаем JSON-вход (данные из формы)
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!$input) {
+        $input = $_POST; // fallback для обычных POST-запросов
     }
 
-    if ($route === 'order') {
-        if ($method === 'POST' && !isset($_GET['id'])) {
-            $data = $input_json ?? $_POST;
-            if (!$data) {
-                http_response_code(400);
-                echo json_encode(['error' => 'Нет данных']);
-                exit;
-            }
-            $result = createOrder($data, $is_logged_in, $user_id);
-            if ($result['success']) {
-                http_response_code(201);
-                echo json_encode([
-                    'status' => 'ok',
-                    'order_id' => $result['order_id'],
-                    'total' => $result['total'],
-                    'login' => $result['generated_login'] ?? null,
-                    'password' => $result['generated_password'] ?? null,
-                ]);
-            } else {
-                http_response_code(400);
-                echo json_encode(['errors' => $result['errors']]);
-            }
-            exit;
+    if ($method === 'POST') {
+        $is_logged = isset($_SESSION['application_id']);
+        $user_id = $is_logged ? $_SESSION['application_id'] : null;
+        $result = createOrder($input, $is_logged, $user_id);
+        
+        if ($result['success']) {
+            http_response_code(201);
+            echo json_encode([
+                'status' => 'ok',
+                'order_id' => $result['order_id'],
+                'total' => $result['total'],
+                'login' => $result['generated_login'] ?? null,
+                'password' => $result['generated_password'] ?? null
+            ]);
+        } else {
+            http_response_code(400);
+            echo json_encode(['errors' => $result['errors']]);
         }
-        elseif (($method === 'PUT' || ($method === 'POST' && isset($_GET['_method']))) && isset($_GET['id'])) {
-            if (!$is_logged_in) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Требуется авторизация']);
-                exit;
-            }
-            $order_id = (int)$_GET['id'];
-            $data = $input_json ?? $_POST;
-            $result = updateOrder($order_id, $data, $user_id);
-            if ($result['success']) {
-                echo json_encode(['status' => 'updated', 'order_id' => $result['order_id'], 'total' => $result['total']]);
-            } else {
-                http_response_code(400);
-                echo json_encode(['errors' => $result['errors']]);
-            }
-            exit;
-        }
-        elseif ($method === 'GET' && isset($_GET['id'])) {
-            if (!$is_logged_in) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Требуется авторизация']);
-                exit;
-            }
-            $order = getOrderById((int)$_GET['id'], $user_id);
-            if ($order) {
-                echo json_encode(['status' => 'ok', 'order' => $order]);
-            } else {
-                http_response_code(404);
-                echo json_encode(['error' => 'Заказ не найден']);
-            }
-            exit;
-        }
-        elseif (($method === 'DELETE' || ($method === 'POST' && isset($_GET['_method']) && $_GET['_method'] === 'DELETE')) && isset($_GET['id'])) {
-            if (!$is_logged_in) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Требуется авторизация']);
-                exit;
-            }
-            $result = deleteOrder((int)$_GET['id'], $user_id);
-            if ($result['success']) {
-                echo json_encode(['status' => 'deleted']);
-            } else {
-                http_response_code(400);
-                echo json_encode(['errors' => $result['errors']]);
-            }
-            exit;
-        }
-        else {
-            http_response_code(405);
-            echo json_encode(['error' => 'Метод не разрешён']);
-            exit;
-        }
-    }
-    elseif ($route === 'orders' && $method === 'GET') {
-        if (!$is_logged_in) {
-            http_response_code(401);
-            echo json_encode(['error' => 'Требуется авторизация']);
-            exit;
-        }
-        echo json_encode(['status' => 'ok', 'orders' => getUserOrders($user_id)]);
         exit;
     }
     else {
-        http_response_code(404);
-        echo json_encode(['error' => 'Endpoint не найден']);
+        http_response_code(405);
+        echo json_encode(['error' => 'Метод не разрешён']);
         exit;
     }
 }
-
-// HTML-код страницы (твой дизайн)
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -148,11 +66,12 @@ if (isset($_GET['route'])) {
 </head>
 <body>
 
-<!-- HEADER (твой HTML-код из index.php друга, без изменений) -->
+<!-- ========== HEADER ========== -->
 <header>
     <div class="video-background">
         <video autoplay muted loop playsinline>
             <source src="video.mp4" type="video/mp4">
+            Ваш браузер не поддерживает видео.
         </video>
         <div class="overlay"></div>
     </div>
@@ -185,7 +104,7 @@ if (isset($_GET['route'])) {
     </div>
 </header>
 
-<!-- МЕНЮ (твой HTML) -->
+<!-- ========== МЕНЮ ========== -->
 <section id="menu" class="section">
     <div class="section-title">
         <h2>Королевское меню</h2>
@@ -256,15 +175,24 @@ if (isset($_GET['route'])) {
     </div>
 </section>
 
-<!-- ТАБЛИЦА СРАВНЕНИЯ -->
+<!-- ========== ТАБЛИЦА СРАВНЕНИЯ ========== -->
 <section class="performance-models section">
     <div class="section-title">
         <h2>Сравнение наших позиций</h2>
         <p>Калорийность и состав наших самых популярных позиций</p>
     </div>
+    
     <div class="table-container">
         <table class="performance-table">
-            <thead><tr><th>Позиция</th><th>Вес</th><th>Калории</th><th>Основной ингредиент</th><th>Время приготовления</th></tr></thead>
+            <thead>
+                <tr>
+                    <th>Позиция</th>
+                    <th>Вес</th>
+                    <th>Калории</th>
+                    <th>Основной ингредиент</th>
+                    <th>Время приготовления</th>
+                </tr>
+            </thead>
             <tbody>
                 <tr><td>Классическая шаурма</td><td>350 г</td><td>450 ккал</td><td>Курица</td><td>5-7 мин</td></tr>
                 <tr><td>Острая шаурма</td><td>380 г</td><td>520 ккал</td><td>Говядина</td><td>6-8 мин</td></tr>
@@ -276,12 +204,13 @@ if (isset($_GET['route'])) {
     </div>
 </section>
 
-<!-- ГАЛЕРЕЯ -->
+<!-- ========== ГАЛЕРЕЯ ========== -->
 <section id="gallery" class="gallery-section section">
     <div class="section-title">
         <h2>Наша шаурмечная</h2>
         <p>Загляните на нашу кухню и почувствуйте атмосферу вкуса</p>
     </div>
+    
     <div class="gallery-container">
         <div class="gallery-slider" id="gallerySlider">
             <div class="gallery-slide active">
@@ -309,7 +238,7 @@ if (isset($_GET['route'])) {
     </div>
 </section>
 
-<!-- КАЛЬКУЛЯТОР -->
+<!-- ========== КАЛЬКУЛЯТОР СТОИМОСТИ ========== -->
 <section id="calculator" class="section">
     <div class="section-title">
         <h2>Калькулятор заказа</h2>
@@ -320,11 +249,11 @@ if (isset($_GET['route'])) {
             <div class="form-group">
                 <label for="product">Тип шаурмы</label>
                 <select id="product" name="product">
-                    <option value="250">Классическая (250 ₽)</option>
-                    <option value="280">Острая (280 ₽)</option>
-                    <option value="220">Вегетарианская (220 ₽)</option>
-                    <option value="350">Дёнер премиум (350 ₽)</option>
-                    <option value="300">Дёнер в лепёшке (300 ₽)</option>
+                    <option value="1" data-price="250">Классическая (250 ₽)</option>
+                    <option value="2" data-price="280">Острая (280 ₽)</option>
+                    <option value="3" data-price="220">Вегетарианская (220 ₽)</option>
+                    <option value="4" data-price="350">Дёнер премиум (350 ₽)</option>
+                    <option value="5" data-price="300">Дёнер в лепёшке (300 ₽)</option>
                 </select>
             </div>
             <div class="form-group">
@@ -358,7 +287,7 @@ if (isset($_GET['route'])) {
     </div>
 </section>
 
-<!-- ФОРМА ЗАКАЗА -->
+<!-- ========== ФОРМА ЗАКАЗА ========== -->
 <section id="contact">
     <h2>Оформить заказ</h2>
     <div id="credentialsBlock" class="credentials-block" style="display:none;"></div>
@@ -373,13 +302,13 @@ if (isset($_GET['route'])) {
     </form>
 </section>
 
-<!-- МОИ ЗАКАЗЫ -->
+<!-- ========== МОИ ЗАКАЗЫ (для авторизованных) ========== -->
 <div class="my-orders" id="myOrdersBlock" style="display: <?= $is_logged_in ? 'block' : 'none' ?>;">
     <h3>Мои заказы</h3>
     <div id="ordersList">Загрузка...</div>
 </div>
 
-<!-- FOOTER -->
+<!-- ========== FOOTER ========== -->
 <footer>
     <div class="footer-content">
         <div class="footer-logo"><i class="fas fa-utensils"></i> Дёнер<span>Королевский</span></div>
@@ -391,7 +320,9 @@ if (isset($_GET['route'])) {
             <li><a href="#contact">Заказ</a></li>
             <li><a href="admin_orders.php">Управление заказами (АДМИН)</a></li>
         </ul>
-        <div class="quote-section"><p class="inspiration-quote">"Лучшая шаурма в городе! Сочное мясо, свежие овощи и идеальные соусы. Рекомендую!"</p></div>
+        <div class="quote-section">
+            <p class="inspiration-quote">"Лучшая шаурма в городе! Сочное мясо, свежие овощи и идеальные соусы. Рекомендую!"</p>
+        </div>
         <div class="social-links">
             <a href="#"><i class="fab fa-vk"></i></a>
             <a href="#"><i class="fab fa-telegram"></i></a>
