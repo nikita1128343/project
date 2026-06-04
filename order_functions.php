@@ -60,7 +60,6 @@ function validateOrderData($data, &$clean_data) {
         $errors['items'] = 'Заказ не может быть пустым.';
     } else {
         $clean_items = [];
-        $pdo = getDB();
         foreach ($data['items'] as $item) {
             $product_id = (int)($item['product_id'] ?? 0);
             $quantity = (int)($item['quantity'] ?? 0);
@@ -68,6 +67,7 @@ function validateOrderData($data, &$clean_data) {
 
             if ($product_id <= 0 || $quantity <= 0) continue;
 
+            $pdo = getDB();
             $stmt = $pdo->prepare("SELECT base_price FROM products WHERE id = ?");
             $stmt->execute([$product_id]);
             $product = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -103,87 +103,82 @@ function validateOrderData($data, &$clean_data) {
 function createOrder($data, $is_logged_in, $user_id = null) {
     $pdo = getDB();
     $pdo->beginTransaction();
-    try {
-        $errors = validateOrderData($data, $clean);
-        if (!empty($errors)) {
-            return ['success' => false, 'errors' => $errors];
-        }
 
-        $session_token = getSessionToken();
-        $application_id = null;
-        $generated_login = null;
-        $generated_password = null;
+    $errors = validateOrderData($data, $clean);
+    if (!empty($errors)) {
+        return ['success' => false, 'errors' => $errors];
+    }
 
-        if (!$is_logged_in) {
-            $login = generate_unique_login($pdo);
-            $plain_password = generate_password();
-            $password_hash = password_hash($plain_password, PASSWORD_DEFAULT);
+    $session_token = getSessionToken();
+    $application_id = null;
+    $generated_login = null;
+    $generated_password = null;
 
-            $stmt = $pdo->prepare("
-                INSERT INTO application (full_name, phone, email, login, password_hash)
-                VALUES (?, ?, ?, ?, ?)
-            ");
-            $stmt->execute([
-                $clean['full_name'], $clean['phone'], $clean['email'],
-                $login, $password_hash
-            ]);
-            $application_id = $pdo->lastInsertId();
-            $generated_login = $login;
-            $generated_password = $plain_password;
-
-            $_SESSION['application_id'] = $application_id;
-        } else {
-            $application_id = $user_id;
-            $stmt = $pdo->prepare("
-                UPDATE application SET full_name = ?, phone = ?, email = ?
-                WHERE id = ?
-            ");
-            $stmt->execute([$clean['full_name'], $clean['phone'], $clean['email'], $application_id]);
-        }
-
-        $total = 0;
-        foreach ($clean['items'] as $item) {
-            $total += $item['quantity'] * $item['price_per_unit'];
-        }
-        $total += $clean['delivery_cost'];
+    if (!$is_logged_in) {
+        $login = generate_unique_login($pdo);
+        $plain_password = generate_password();
+        $password_hash = password_hash($plain_password, PASSWORD_DEFAULT);
 
         $stmt = $pdo->prepare("
-            INSERT INTO orders 
-            (application_id, session_token, full_name, phone, email, address, message, delivery_cost, total_price, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
-        ");
-        $stmt->execute([
-            $application_id, $session_token,
-            $clean['full_name'], $clean['phone'], $clean['email'],
-            $clean['address'], $clean['message'], $clean['delivery_cost'], $total
-        ]);
-        $order_id = $pdo->lastInsertId();
-
-        $stmt_item = $pdo->prepare("
-            INSERT INTO order_items (order_id, product_id, quantity, options_json, price_per_unit)
+            INSERT INTO application (full_name, phone, email, login, password_hash)
             VALUES (?, ?, ?, ?, ?)
         ");
-        foreach ($clean['items'] as $item) {
-            $options_json = json_encode($item['options']);
-            $stmt_item->execute([
-                $order_id, $item['product_id'], $item['quantity'],
-                $options_json, $item['price_per_unit']
-            ]);
-        }
+        $stmt->execute([
+            $clean['full_name'], $clean['phone'], $clean['email'],
+            $login, $password_hash
+        ]);
+        $application_id = $pdo->lastInsertId();
+        $generated_login = $login;
+        $generated_password = $plain_password;
 
-        $pdo->commit();
-        return [
-            'success' => true,
-            'order_id' => $order_id,
-            'total' => $total,
-            'generated_login' => $generated_login,
-            'generated_password' => $generated_password
-        ];
-    } catch (Exception $e) {
-        $pdo->rollBack();
-        error_log("Order creation error: " . $e->getMessage());
-        return ['success' => false, 'errors' => ['db' => 'Ошибка при создании заказа']];
+        $_SESSION['application_id'] = $application_id;
+    } else {
+        $application_id = $user_id;
+        $stmt = $pdo->prepare("
+            UPDATE application SET full_name = ?, phone = ?, email = ?
+            WHERE id = ?
+        ");
+        $stmt->execute([$clean['full_name'], $clean['phone'], $clean['email'], $application_id]);
     }
+
+    $total = 0;
+    foreach ($clean['items'] as $item) {
+        $total += $item['quantity'] * $item['price_per_unit'];
+    }
+    $total += $clean['delivery_cost'];
+
+    $stmt = $pdo->prepare("
+        INSERT INTO orders 
+        (application_id, session_token, full_name, phone, email, address, message, delivery_cost, total_price, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')
+    ");
+    $stmt->execute([
+        $application_id, $session_token,
+        $clean['full_name'], $clean['phone'], $clean['email'],
+        $clean['address'], $clean['message'], $clean['delivery_cost'], $total
+    ]);
+    $order_id = $pdo->lastInsertId();
+
+    $stmt_item = $pdo->prepare("
+        INSERT INTO order_items (order_id, product_id, quantity, options_json, price_per_unit)
+        VALUES (?, ?, ?, ?, ?)
+    ");
+    foreach ($clean['items'] as $item) {
+        $options_json = json_encode($item['options']);
+        $stmt_item->execute([
+            $order_id, $item['product_id'], $item['quantity'],
+            $options_json, $item['price_per_unit']
+        ]);
+    }
+
+    $pdo->commit();
+    return [
+        'success' => true,
+        'order_id' => $order_id,
+        'total' => $total,
+        'generated_login' => $generated_login,
+        'generated_password' => $generated_password
+    ];
 }
 
 function updateOrder($order_id, $data, $user_id) {
@@ -234,8 +229,7 @@ function updateOrder($order_id, $data, $user_id) {
         return ['success' => true, 'order_id' => $order_id, 'total' => $total];
     } catch (Exception $e) {
         $pdo->rollBack();
-        error_log("Order update error: " . $e->getMessage());
-        return ['success' => false, 'errors' => ['db' => 'Ошибка при обновлении заказа']];
+        return ['success' => false, 'errors' => ['db' => $e->getMessage()]];
     }
 }
 
@@ -296,8 +290,7 @@ function deleteOrder($order_id, $user_id) {
         $pdo->prepare("DELETE FROM orders WHERE id = ?")->execute([$order_id]);
         return ['success' => true];
     } catch (Exception $e) {
-        error_log("Order delete error: " . $e->getMessage());
-        return ['success' => false, 'errors' => ['db' => 'Ошибка при удалении заказа']];
+        return ['success' => false, 'errors' => ['db' => $e->getMessage()]];
     }
 }
 ?>
