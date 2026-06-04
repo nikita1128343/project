@@ -30,7 +30,8 @@ document.addEventListener('DOMContentLoaded', function() {
         statusDiv.style.display = 'block';
 
         try {
-            const response = await fetch('./api.php', {
+            // ВАЖНО: используй правильный путь!
+            const response = await fetch('api.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
@@ -65,7 +66,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 statusDiv.className = 'form-message error';
             }
         } catch (err) {
-            statusDiv.innerHTML = '❌ Ошибка сети: ' + err.message;
+            statusDiv.innerHTML = '❌ Ошибка: ' + err.message;
             statusDiv.className = 'form-message error';
         } finally {
             setTimeout(() => {
