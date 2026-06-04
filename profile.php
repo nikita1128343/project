@@ -2,8 +2,8 @@
 session_start();
 if (!isset($_SESSION['application_id'])) {
     header('Location: login.php');
-    exit();
+    exit;
 }
 header('Location: index.php');
-exit();
+exit;
 ?>

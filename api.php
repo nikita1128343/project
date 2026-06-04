@@ -3,94 +3,60 @@ header('Content-Type: application/json; charset=UTF-8');
 session_start();
 
 require_once 'db.php';
+require_once 'order_functions.php';
 
-$data = json_decode(file_get_contents('php://input'), true);
-if (!$data) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Нет данных']);
+$method = $_SERVER['REQUEST_METHOD'];
+$route = $_GET['route'] ?? '';
+
+$input_json = null;
+if ($method === 'POST' && empty($_POST)) {
+    $input_json = json_decode(file_get_contents('php://input'), true);
+}
+
+if ($route === 'order') {
+    if ($method === 'POST') {
+        $data = $input_json ?? $_POST;
+        if (!$data) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Нет данных']);
+            exit;
+        }
+        $is_logged = isset($_SESSION['application_id']);
+        $user_id = $is_logged ? $_SESSION['application_id'] : null;
+        $result = createOrder($data, $is_logged, $user_id);
+        if ($result['success']) {
+            http_response_code(201);
+            echo json_encode([
+                'status' => 'ok',
+                'order_id' => $result['order_id'],
+                'total' => $result['total'],
+                'login' => $result['generated_login'] ?? null,
+                'password' => $result['generated_password'] ?? null
+            ]);
+        } else {
+            http_response_code(400);
+            echo json_encode(['errors' => $result['errors']]);
+        }
+        exit;
+    }
+    else {
+        http_response_code(405);
+        echo json_encode(['error' => 'Метод не разрешён']);
+        exit;
+    }
+}
+elseif ($route === 'orders' && $method === 'GET') {
+    if (!isset($_SESSION['application_id'])) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Требуется авторизация']);
+        exit;
+    }
+    echo json_encode(['status' => 'ok', 'orders' => getUserOrders($_SESSION['application_id'])]);
     exit;
 }
-
-$is_logged_in = isset($_SESSION['application_id']);
-$user_id = $is_logged_in ? $_SESSION['application_id'] : null;
-$pdo = getDB();
-$pdo->beginTransaction();
-
-$full_name = trim($data['full_name'] ?? '');
-$phone = trim($data['phone'] ?? '');
-$email = trim($data['email'] ?? '');
-$address = trim($data['address'] ?? '');
-$message = trim($data['message'] ?? '');
-$delivery_cost = (int)($data['delivery_cost'] ?? 0);
-$items = $data['items'] ?? [];
-
-if (empty($full_name) || empty($phone) || empty($email) || empty($address) || empty($items)) {
-    $pdo->rollBack();
-    http_response_code(400);
-    echo json_encode(['error' => 'Заполните все обязательные поля']);
+else {
+    http_response_code(404);
+    echo json_encode(['error' => 'Endpoint не найден']);
     exit;
 }
-
-$application_id = null;
-$generated_login = null;
-$generated_password = null;
-
-if (!$is_logged_in) {
-    $login = generate_unique_login($pdo);
-    $plain_password = generate_password();
-    $password_hash = password_hash($plain_password, PASSWORD_DEFAULT);
-    $stmt = $pdo->prepare("INSERT INTO application (full_name, phone, email, login, password_hash) VALUES (?, ?, ?, ?, ?)");
-    $stmt->execute([$full_name, $phone, $email, $login, $password_hash]);
-    $application_id = $pdo->lastInsertId();
-    $generated_login = $login;
-    $generated_password = $plain_password;
-    $_SESSION['application_id'] = $application_id;
-} else {
-    $application_id = $user_id;
-    $stmt = $pdo->prepare("UPDATE application SET full_name = ?, phone = ?, email = ? WHERE id = ?");
-    $stmt->execute([$full_name, $phone, $email, $application_id]);
-}
-
-$total = 0;
-foreach ($items as $item) {
-    $product_id = (int)($item['product_id'] ?? 0);
-    $quantity = (int)($item['quantity'] ?? 0);
-    $stmt = $pdo->prepare("SELECT base_price FROM products WHERE id = ?");
-    $stmt->execute([$product_id]);
-    $product = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$product) continue;
-    $options = $item['options'] ?? [];
-    $extra = 0;
-    if (!empty($options['cheese'])) $extra += 50;
-    if (!empty($options['sauce'])) $extra += 30;
-    if (!empty($options['meat'])) $extra += 100;
-    if (!empty($options['set'])) $extra += 150;
-    $price = ($product['base_price'] + $extra) * $quantity;
-    $total += $price;
-}
-$total += $delivery_cost;
-
-$session_token = getSessionToken();
-$stmt = $pdo->prepare("INSERT INTO orders (application_id, session_token, full_name, phone, email, address, message, delivery_cost, total_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')");
-$stmt->execute([$application_id, $session_token, $full_name, $phone, $email, $address, $message, $delivery_cost, $total]);
-$order_id = $pdo->lastInsertId();
-
-$stmt = $pdo->prepare("INSERT INTO order_items (order_id, product_id, quantity, options_json, price_per_unit) VALUES (?, ?, ?, ?, ?)");
-foreach ($items as $item) {
-    $product_id = (int)($item['product_id'] ?? 0);
-    $quantity = (int)($item['quantity'] ?? 0);
-    $options = $item['options'] ?? [];
-    $stmt->execute([$order_id, $product_id, $quantity, json_encode($options), 0]);
-}
-
-$pdo->commit();
-
-http_response_code(201);
-echo json_encode([
-    'status' => 'ok',
-    'order_id' => $order_id,
-    'total' => $total,
-    'login' => $generated_login,
-    'password' => $generated_password
-]);
 ?>

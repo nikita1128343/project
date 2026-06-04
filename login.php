@@ -1,9 +1,5 @@
 <?php
 session_start();
-if (isset($_SESSION['application_id'])) {
-    header('Location: index.php');
-    exit();
-}
 
 function getDB() {
     static $pdo = null;
@@ -16,8 +12,7 @@ function getDB() {
             $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) {
-            error_log("Database error: " . $e->getMessage());
-            die("Внутренняя ошибка сервера");
+            die("Ошибка подключения к БД: " . $e->getMessage());
         }
     }
     return $pdo;
@@ -27,20 +22,20 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $login = trim($_POST['login'] ?? '');
     $password = $_POST['password'] ?? '';
-    if ($login && $password) {
+    if (!empty($login) && !empty($password)) {
         $pdo = getDB();
         $stmt = $pdo->prepare("SELECT id, password_hash FROM application WHERE login = ?");
         $stmt->execute([$login]);
-        $user = $stmt->fetch();
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($user && password_verify($password, $user['password_hash'])) {
             $_SESSION['application_id'] = $user['id'];
             header('Location: index.php');
-            exit();
+            exit;
         } else {
             $error = 'Неверный логин или пароль';
         }
     } else {
-        $error = 'Заполните оба поля';
+        $error = 'Заполните все поля';
     }
 }
 ?>
@@ -49,92 +44,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <title>Вход</title>
-    <link rel="stylesheet" href="style.css">
     <style>
-        .login-container {
-            max-width: 480px;
-            margin: 50px auto;
-            padding: 30px;
-            background-color: var(--card-bg, #1e1e1e);
-            border-radius: var(--border-radius, 16px);
-            border: 1px solid var(--border-color, #37474f);
-            box-shadow: var(--shadow, 0 6px 16px rgba(0,0,0,0.5));
-        }
-        .login-container h2 {
-            text-align: center;
-            margin-bottom: 25px;
-            color: var(--dark-color, #e0e0e0);
-        }
-        .login-container .form-group {
-            margin-bottom: 20px;
-        }
-        .login-container label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: var(--text-color, #e0e0e0);
-        }
-        .login-container input {
-            width: 100%;
-            padding: 14px;
-            background-color: #2c2c2c;
-            border: 2px solid var(--border-color, #37474f);
-            border-radius: 10px;
-            font-family: 'Nunito', sans-serif;
-            font-size: 1rem;
-            color: var(--text-color, #e0e0e0);
-            transition: var(--transition, all 0.3s ease);
-        }
-        .login-container input:focus {
-            border-color: var(--accent-color, #2e7d32);
-            outline: none;
-        }
-        .login-container .btn {
-            width: 100%;
-            padding: 14px;
-            font-size: 1.1rem;
-            margin-top: 10px;
-        }
-        .login-container .filter-bar {
-            margin-top: 25px;
-            text-align: center;
-        }
-        .login-container .filter-bar a {
-            display: inline-block;
-            padding: 10px 20px;
-            background-color: #2c2c2c;
-            border-radius: 30px;
-            color: var(--text-color, #e0e0e0);
-            text-decoration: none;
-            transition: var(--transition, all 0.3s ease);
-        }
-        .login-container .filter-bar a:hover {
-            background-color: var(--accent-color, #2e7d32);
-            color: white;
-            transform: translateY(-2px);
-        }
+        body { font-family: Arial, sans-serif; background: #1e1e1e; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .login-box { background: #2c2c2c; padding: 30px; border-radius: 12px; width: 300px; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #3c3c3c; border: none; color: #fff; border-radius: 6px; }
+        button { width: 100%; padding: 10px; background: #2e7d32; border: none; color: #fff; border-radius: 6px; cursor: pointer; }
+        .error { color: #f44336; margin-bottom: 15px; }
+        a { color: #ff9800; text-decoration: none; display: block; text-align: center; margin-top: 15px; }
     </style>
 </head>
 <body>
-    <div class="login-container">
-        <h2>Вход в систему</h2>
+    <div class="login-box">
+        <h2>Вход</h2>
         <?php if ($error): ?>
-            <div class="error-message"><?= htmlspecialchars($error) ?></div>
+            <div class="error"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
         <form method="post">
-            <div class="form-group">
-                <label>Логин</label>
-                <input type="text" name="login" required>
-            </div>
-            <div class="form-group">
-                <label>Пароль</label>
-                <input type="password" name="password" required>
-            </div>
-            <button type="submit" class="btn">Войти</button>
+            <input type="text" name="login" placeholder="Логин" required>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <button type="submit">Войти</button>
         </form>
-        <div class="filter-bar" style="margin-top: 30px; text-align: center;">
-            <a href="index.php">← Вернуться на главную</a>
-        </div>
+        <a href="index.php">← На главную</a>
     </div>
 </body>
 </html>

@@ -1,6 +1,5 @@
 <?php
 header('Content-Type: text/html; charset=UTF-8');
-session_start();
 
 function getDB() {
     static $pdo = null;
@@ -13,8 +12,7 @@ function getDB() {
             $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) {
-            error_log("Database error: " . $e->getMessage());
-            die("Ошибка подключения к БД");
+            die("Ошибка подключения к БД: " . $e->getMessage());
         }
     }
     return $pdo;
@@ -44,16 +42,12 @@ if (!$admin_row || !password_verify($auth_pass, $admin_row['password_hash'])) {
     exit;
 }
 
-// Фильтрация
+// Фильтр
 $filter = $_GET['filter'] ?? 'all';
 $today = date('Y-m-d');
-$where = '';
-if ($filter === 'today') {
-    $where = "WHERE DATE(o.created_at) = '$today'";
-}
+$where = $filter === 'today' ? "WHERE DATE(o.created_at) = '$today'" : '';
 
-// Удаление заказа
-$messages = [];
+// Удаление
 if (isset($_GET['delete'])) {
     $id = (int)$_GET['delete'];
     try {
@@ -61,7 +55,7 @@ if (isset($_GET['delete'])) {
         $pdo->prepare("DELETE FROM order_items WHERE order_id = ?")->execute([$id]);
         $pdo->prepare("DELETE FROM orders WHERE id = ?")->execute([$id]);
         $pdo->commit();
-        $messages[] = '<div class="success-message">Заказ №' . $id . ' успешно удалён</div>';
+        $messages[] = '<div class="success-message">Заказ №' . $id . ' удалён</div>';
     } catch (Exception $e) {
         $pdo->rollBack();
         $messages[] = '<div class="error-message">Ошибка удаления</div>';
@@ -88,11 +82,7 @@ while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
 }
 
 $total_orders = count($orders);
-$today_orders = 0;
-if ($filter === 'all') {
-    $stmt = $pdo->query("SELECT COUNT(*) FROM orders WHERE DATE(created_at) = '$today'");
-    $today_orders = $stmt->fetchColumn();
-}
+$today_orders = $filter === 'all' ? $pdo->query("SELECT COUNT(*) FROM orders WHERE DATE(created_at) = '$today'")->fetchColumn() : 0;
 ?>
 <!DOCTYPE html>
 <html lang="ru">
@@ -101,7 +91,7 @@ if ($filter === 'all') {
     <title>Админ-панель заказов</title>
     <style>
         body { font-family: Arial, sans-serif; background: #1e1e1e; color: #fff; padding: 20px; }
-        .admin-container { max-width: 1400px; margin: 0 auto; }
+        .container { max-width: 1400px; margin: 0 auto; }
         .filter-bar { margin: 20px 0; }
         .filter-bar a { margin-right: 15px; padding: 8px 16px; background: #2c2c2c; color: #fff; text-decoration: none; border-radius: 8px; }
         .filter-bar a.active { background: #2e7d32; }
@@ -114,19 +104,15 @@ if ($filter === 'all') {
     </style>
 </head>
 <body>
-<div class="admin-container">
+<div class="container">
     <h1>🔧 Админ-панель заказов</h1>
     <p>Авторизован как <strong><?= htmlspecialchars($auth_login) ?></strong></p>
-
-    <?php foreach ($messages as $msg) echo $msg; ?>
-
+    <?php if (!empty($messages)) foreach ($messages as $msg) echo $msg; ?>
     <div class="filter-bar">
         <a href="?filter=all" class="<?= $filter === 'all' ? 'active' : '' ?>">Все заказы</a>
         <a href="?filter=today" class="<?= $filter === 'today' ? 'active' : '' ?>">За сегодня (<?= $today_orders ?>)</a>
     </div>
-
     <p>Всего заказов: <?= $total_orders ?></p>
-
     <table>
         <thead><tr><th>ID</th><th>Дата</th><th>Клиент</th><th>Телефон</th><th>Email</th><th>Адрес</th><th>Сумма</th><th>Статус</th><th>Действия</th></tr></thead>
         <tbody>
@@ -141,14 +127,14 @@ if ($filter === 'all') {
             <td><?= $order['total_price'] ?> ₽</td>
             <td><?= $order['status'] ?></td>
             <td class="actions">
-                <a href="?edit=<?= $order['id'] ?>&filter=<?= $filter ?>">✏️ Ред.</a>
-                <a href="?delete=<?= $order['id'] ?>&filter=<?= $filter ?>" onclick="return confirm('Удалить?')">🗑 Удалить</a>
+                <a href="?edit=<?= $order['id'] ?>">✏️ Ред.</a>
+                <a href="?delete=<?= $order['id'] ?>" onclick="return confirm('Удалить?')">🗑 Удалить</a>
             </td>
         </tr>
         <?php endforeach; ?>
         </tbody>
     </table>
-    <div style="margin-top:30px; text-align:center;"><a href="index.php">← Вернуться на главную</a></div>
+    <div style="margin-top:30px;"><a href="index.php">← На главную</a></div>
 </div>
 </body>
 </html>
