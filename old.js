@@ -16,22 +16,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 product_id: parseInt(document.getElementById('product').value, 10),
                 quantity: parseInt(document.getElementById('quantity').value, 10),
                 options: {
-                    cheese: document.getElementById('cheese').checked ? 1 : 0,
-                    sauce: document.getElementById('sauce').checked ? 1 : 0,
-                    meat: document.getElementById('meat').checked ? 1 : 0,
-                    set: document.getElementById('set').checked ? 1 : 0
+                    cheese: document.getElementById('cheese').checked,
+                    sauce: document.getElementById('sauce').checked,
+                    meat: document.getElementById('meat').checked,
+                    set: document.getElementById('set').checked
                 }
             }]
         };
 
         const statusDiv = document.getElementById('formStatus');
         statusDiv.innerHTML = '⏳ Отправка...';
-        statusDiv.className = 'form-message sending';
         statusDiv.style.display = 'block';
 
         try {
-            // ВАЖНО: используй правильный путь!
-            const response = await fetch(window.location.href, {
+            const response = await fetch('./api.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
@@ -42,7 +40,6 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.ok && result.status === 'ok') {
                 statusDiv.innerHTML = '✅ Заказ принят!';
                 statusDiv.className = 'form-message success';
-                
                 if (result.login && result.password) {
                     const credBlock = document.getElementById('credentialsBlock');
                     if (credBlock) {
@@ -57,22 +54,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 form.reset();
                 if (typeof calculateTotal === 'function') calculateTotal();
-                if (typeof loadOrders === 'function') loadOrders();
             } else {
-                let errMsg = 'Ошибка: ';
-                if (result.errors) errMsg += Object.values(result.errors).join(', ');
-                else errMsg += result.error || 'Неизвестная ошибка';
+                let errMsg = result.error || result.errors ? Object.values(result.errors).join(', ') : 'Ошибка';
                 statusDiv.innerHTML = '❌ ' + errMsg;
                 statusDiv.className = 'form-message error';
             }
         } catch (err) {
-            statusDiv.innerHTML = '❌ Ошибка: ' + err.message;
+            statusDiv.innerHTML = '❌ Ошибка сети: ' + err.message;
             statusDiv.className = 'form-message error';
-        } finally {
-            setTimeout(() => {
-                if (statusDiv.className !== 'form-message error') statusDiv.style.display = 'none';
-            }, 5000);
         }
+
+        setTimeout(() => {
+            if (statusDiv.className !== 'form-message error') statusDiv.style.display = 'none';
+        }, 5000);
     });
 
     function escapeHtml(str) {

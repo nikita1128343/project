@@ -11,7 +11,6 @@ function getDB() {
             $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         } catch (PDOException $e) {
             error_log("Database error: " . $e->getMessage());
-            http_response_code(500);
             die(json_encode(['error' => 'Ошибка подключения к БД']));
         }
     }
