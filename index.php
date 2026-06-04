@@ -1,606 +1,893 @@
 <?php
 session_start();
+$is_logged_in = isset($_SESSION['application_id']);
+$user_id = $is_logged_in ? $_SESSION['application_id'] : null;
+
+// === ОБРАБОТКА API-ЗАПРОСОВ ===
+if (isset($_GET['route'])) {
+    error_reporting(0);
+    header('Content-Type: application/json; charset=UTF-8');
+
+    try {
+        require_once __DIR__ . '/db.php';
+        require_once __DIR__ . '/order_functions.php';
+    } catch (Exception $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Ошибка загрузки модулей: ' . $e->getMessage()]);
+        exit;
+    }
+
+    $method = $_SERVER['REQUEST_METHOD'];
+    $route = $_GET['route'];
+
+    // Эмуляция PUT/DELETE через POST + _method
+    if ($method === 'POST' && isset($_POST['_method'])) {
+        $method = strtoupper($_POST['_method']);
+    }
+    $input_json = null;
+    if ($method === 'POST' && empty($_POST)) {
+        $input_json = json_decode(file_get_contents('php://input'), true);
+        if (isset($input_json['_method'])) {
+            $method = strtoupper($input_json['_method']);
+            unset($input_json['_method']);
+        }
+    }
+
+    if ($route === 'order') {
+        // Создание заказа
+        if ($method === 'POST' && !isset($_GET['id'])) {
+            $data = $input_json ?? $_POST;
+            if (!$data) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Нет данных']);
+                exit;
+            }
+            $result = createOrder($data, $is_logged_in, $user_id);
+            if ($result['success']) {
+                http_response_code(201);
+                echo json_encode([
+                    'status' => 'ok',
+                    'order_id' => $result['order_id'],
+                    'total' => $result['total'],
+                    'login' => $result['generated_login'] ?? null,
+                    'password' => $result['generated_password'] ?? null,
+                ]);
+            } else {
+                http_response_code(400);
+                echo json_encode(['errors' => $result['errors']]);
+            }
+            exit;
+        }
+        // Обновление заказа (PUT)
+        elseif (($method === 'PUT' || ($method === 'POST' && isset($_GET['_method']))) && isset($_GET['id'])) {
+            if (!$is_logged_in) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Требуется авторизация']);
+                exit;
+            }
+            $order_id = (int)$_GET['id'];
+            $data = $input_json ?? $_POST;
+            $result = updateOrder($order_id, $data, $user_id);
+            if ($result['success']) {
+                echo json_encode(['status' => 'updated', 'order_id' => $result['order_id'], 'total' => $result['total']]);
+            } else {
+                http_response_code(400);
+                echo json_encode(['errors' => $result['errors']]);
+            }
+            exit;
+        }
+        // Получение одного заказа (GET)
+        elseif ($method === 'GET' && isset($_GET['id'])) {
+            if (!$is_logged_in) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Требуется авторизация']);
+                exit;
+            }
+            $order = getOrderById((int)$_GET['id'], $user_id);
+            if ($order) {
+                echo json_encode(['status' => 'ok', 'order' => $order]);
+            } else {
+                http_response_code(404);
+                echo json_encode(['error' => 'Заказ не найден']);
+            }
+            exit;
+        }
+        // Удаление заказа (DELETE)
+        elseif (($method === 'DELETE' || ($method === 'POST' && isset($_GET['_method']) && $_GET['_method'] === 'DELETE')) && isset($_GET['id'])) {
+            if (!$is_logged_in) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Требуется авторизация']);
+                exit;
+            }
+            $order_id = (int)$_GET['id'];
+            $result = deleteOrder($order_id, $user_id);
+            if ($result['success']) {
+                echo json_encode(['status' => 'deleted']);
+            } else {
+                http_response_code(400);
+                echo json_encode(['errors' => $result['errors']]);
+            }
+            exit;
+        }
+        else {
+            http_response_code(405);
+            echo json_encode(['error' => 'Метод не разрешён']);
+            exit;
+        }
+    }
+    elseif ($route === 'orders' && $method === 'GET') {
+        if (!$is_logged_in) {
+            http_response_code(401);
+            echo json_encode(['error' => 'Требуется авторизация']);
+            exit;
+        }
+        echo json_encode(['status' => 'ok', 'orders' => getUserOrders($user_id)]);
+        exit;
+    }
+    else {
+        http_response_code(404);
+        echo json_encode(['error' => 'Endpoint не найден']);
+        exit;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="ru">
 <head>
+    <link rel="icon" href="https://img.icons8.com/color/96/000000/kebab.png" type="image/x-icon">
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>Дёнерная "Вкусный Дёнер"</title>
-    <link rel="stylesheet" href="style.css">
-    <style>
-        /* Дополнительные стили для страницы заказа */
-        .order-success {
-            background: #2e7d32;
-            color: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin: 20px 0;
-            text-align: center;
-        }
-        .order-success .credentials {
-            background: #1b5e20;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
-            font-family: monospace;
-            font-size: 16px;
-        }
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.8);
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-        }
-        .modal-content {
-            background: #2c2c2c;
-            padding: 30px;
-            border-radius: 12px;
-            max-width: 500px;
-            width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-        }
-        .modal-content h3 {
-            margin-top: 0;
-            color: #ff9800;
-        }
-        .close-modal {
-            float: right;
-            cursor: pointer;
-            font-size: 24px;
-            color: #ff9800;
-        }
-        .order-item {
-            border-bottom: 1px solid #444;
-            padding: 10px 0;
-        }
-        .delivery-option {
-            margin: 10px 0;
-            padding: 10px;
-            background: #3c3c3c;
-            border-radius: 8px;
-            cursor: pointer;
-        }
-        .delivery-option.selected {
-            background: #2e7d32;
-        }
-        .error-message {
-            color: #f44336;
-            font-size: 12px;
-            margin-top: 5px;
-        }
-        .form-group {
-            margin-bottom: 15px;
-        }
-        .form-group input, .form-group textarea {
-            width: 100%;
-            padding: 10px;
-            background: #3c3c3c;
-            border: 1px solid #555;
-            color: white;
-            border-radius: 6px;
-        }
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            color: #ff9800;
-        }
-        .btn-order {
-            background: #ff9800;
-            color: #1e1e1e;
-            padding: 15px;
-            font-size: 18px;
-            font-weight: bold;
-            width: 100%;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            margin-top: 20px;
-        }
-        .btn-order:hover {
-            background: #f57c00;
-        }
-        .cart-summary {
-            background: #0a2e0a;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            position: sticky;
-            bottom: 0;
-        }
-        .menu-tab {
-            display: inline-block;
-            padding: 10px 20px;
-            background: #2c2c2c;
-            cursor: pointer;
-            border-radius: 8px 8px 0 0;
-        }
-        .menu-tab.active {
-            background: #ff9800;
-            color: #1e1e1e;
-        }
-        .menu-section {
-            display: none;
-            padding: 20px;
-            background: #2c2c2c;
-            border-radius: 0 8px 8px 8px;
-        }
-        .menu-section.active {
-            display: block;
-        }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Дёнер "Королевский" | Лучшая шаурма в городе</title>
+    
+    <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="stylesheet" href="style.css">
+<style>
+    /* Кнопка входа/выхода */
+.login-btn, .logout-btn {
+    background: linear-gradient(135deg, #2c2c2c, #1a1a1a);
+    box-shadow: none;
+}
+.login-btn:hover, .logout-btn:hover {
+    background: linear-gradient(135deg, #3e3e3e, #2a2a2a);
+}
+</style>
 </head>
 <body>
-    <header>
-        <div class="logo">
-            <h1>🥙 Вкусный Дёнер</h1>
-            <p>Дёнеры и шаурма с доставкой</p>
-        </div>
-        <nav>
-            <ul>
-                <li><a href="#home">Главная</a></li>
-                <li><a href="#menu">Меню</a></li>
-                <li><a href="#gallery">Галерея</a></li>
-                <li><a href="#contacts">Контакты</a></li>
-                <?php if (isset($_SESSION['application_id'])): ?>
-                    <li><a href="logout.php">Выйти</a></li>
-                <?php else: ?>
-                    <li><a href="login.php">Войти</a></li>
-                <?php endif; ?>
-            </ul>
-        </nav>
-        <div class="cart-icon" onclick="openCartModal()">
-            🛒 <span id="cart-count">0</span>
-        </div>
-        <div class="mobile-menu-btn">☰</div>
-    </header>
-
-    <main>
-        <section id="home">
-            <div class="hero">
-                <h2>Самые вкусные дёнеры в городе!</h2>
-                <p>Сочное мясо, свежие овощи, авторские соусы</p>
-                <button onclick="scrollToMenu()">Заказать сейчас</button>
-            </div>
-        </section>
-
-        <section id="menu">
-            <h2>Наше меню</h2>
-            <div class="menu-tabs">
-                <div class="menu-tab active" data-tab="doner">Дёнеры</div>
-                <div class="menu-tab" data-tab="rolls">Роллы</div>
-                <div class="menu-tab" data-tab="drinks">Напитки</div>
-            </div>
-            <div id="doner-section" class="menu-section active">
-                <div class="products" id="doner-products"></div>
-            </div>
-            <div id="rolls-section" class="menu-section">
-                <div class="products" id="rolls-products"></div>
-            </div>
-            <div id="drinks-section" class="menu-section">
-                <div class="products" id="drinks-products"></div>
-            </div>
-        </section>
-
-        <section id="gallery">
-            <h2>Галерея</h2>
-            <div class="gallery-container"></div>
-        </section>
-
-        <section id="contacts">
-            <h2>Контакты</h2>
-            <p>📍 Адрес: г. Москва, ул. Вкусная, д. 15</p>
-            <p>📞 Телефон: +7 (999) 123-45-67</p>
-            <p>⏰ Режим работы: Ежедневно 10:00 - 23:00</p>
-            <p>📧 Email: info@doner.ru</p>
-        </section>
-    </main>
-
-    <!-- Модальное окно корзины -->
-    <div id="cartModal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal" onclick="closeCartModal()">&times;</span>
-            <h3>🛒 Ваш заказ</h3>
-            <div id="cart-items"></div>
-            <div id="delivery-options">
-                <h4>Доставка</h4>
-                <div class="delivery-option" data-cost="0" onclick="selectDelivery(this, 0)">
-                    🚶 Самовывоз (бесплатно)
-                </div>
-                <div class="delivery-option" data-cost="150" onclick="selectDelivery(this, 150)">
-                    🚗 Доставка (150 ₽)
-                </div>
-                <div class="delivery-option" data-cost="250" onclick="selectDelivery(this, 250)">
-                    🛵 Экспресс-доставка (250 ₽)
-                </div>
-            </div>
-            <div class="cart-summary">
-                <strong>Итого: <span id="cart-total">0</span> ₽</strong>
-                <button class="btn-order" onclick="openOrderForm()">Оформить заказ</button>
-            </div>
-        </div>
+<!-- ========== HEADER ========== -->
+<header>
+    <div class="video-background">
+        <video autoplay muted loop playsinline>
+            <source src="video.mp4" type="video/mp4">
+            Ваш браузер не поддерживает видео.
+        </video>
+        <div class="overlay"></div>
     </div>
-
-    <!-- Модальное окно формы заказа -->
-    <div id="orderFormModal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal" onclick="closeOrderForm()">&times;</span>
-            <h3>📝 Оформление заказа</h3>
-            <form id="orderForm">
-                <div class="form-group">
-                    <label>Ваше имя и фамилия *</label>
-                    <input type="text" name="full_name" required>
-                </div>
-                <div class="form-group">
-                    <label>Телефон *</label>
-                    <input type="tel" name="phone" required placeholder="+7 (999) 123-45-67">
-                </div>
-                <div class="form-group">
-                    <label>Email *</label>
-                    <input type="email" name="email" required>
-                </div>
-                <div class="form-group">
-                    <label>Адрес доставки *</label>
-                    <input type="text" name="address" required>
-                </div>
-                <div class="form-group">
-                    <label>Комментарий к заказу</label>
-                    <textarea name="message" rows="3"></textarea>
-                </div>
-                <input type="hidden" name="delivery_cost" id="delivery_cost" value="0">
-                <button type="submit" class="btn-order">Подтвердить заказ</button>
-            </form>
+    
+    <nav>
+        <a href="#" class="logo"><i class="fas fa-utensils"></i> Дёнер<span>Королевский</span></a>
+        <ul class="nav-links">
+            <li><a href="#"><i class="fas fa-home"></i> Главная</a></li>
+            <li><a href="#menu"><i class="fas fa-hamburger"></i> Меню</a></li>
+            <li><a href="#calculator"><i class="fas fa-calculator"></i> Калькулятор</a></li>
+            <li><a href="#gallery"><i class="fas fa-images"></i> Галерея</a></li>
+            <li><a href="#contact"><i class="fas fa-address-book"></i> Заказ</a></li>
+          <?php if ($is_logged_in): ?>
+        <li><a href="logout.php" class="btn logout-btn"><i class="fas fa-sign-out-alt"></i> Выйти</a></li>
+    <?php else: ?>
+        <li><a href="login.php" class="btn login-btn"><i class="fas fa-sign-in-alt"></i> Войти</a></li>
+    <?php endif; ?>
+            <!--<li><a href="#" class="btn contact-btn"><i class="fas fa-phone-alt"></i> Заказать</a></li> -->
+        </ul>
+        <div class="burger" id="burgerBtn">
+            <div></div>
+            <div></div>
+            <div></div>
         </div>
+    </nav>
+    
+    <div class="hero">
+        <h1>Дёнер "Королевский"</h1>
+        <p>Настоящая шаурма по королевскому рецепту! Сочное мясо, свежие овощи и фирменные соусы. Приготовлено на открытом огне.</p>
+        <a href="#menu" class="btn">Выбрать шаурму</a>
     </div>
+</header>
 
-    <!-- Модальное окно успеха -->
-    <div id="successModal" class="modal">
-        <div class="modal-content">
-            <span class="close-modal" onclick="closeSuccessModal()">&times;</span>
-            <div class="order-success">
-                <h3>✅ Заказ успешно оформлен!</h3>
-                <p>Номер заказа: <strong id="order-id"></strong></p>
-                <p>Сумма: <strong id="order-total"></strong> ₽</p>
-                <div id="credentials-block" style="display:none;">
-                    <p>🔑 Для отслеживания заказов создан аккаунт:</p>
-                    <div class="credentials">
-                        Логин: <span id="generated-login"></span><br>
-                        Пароль: <span id="generated-password"></span>
+<!-- ========== МЕНЮ ========== -->
+<section id="menu" class="section">
+    <div class="section-title">
+        <h2>Королевское меню</h2>
+        <p>Выберите свою идеальную шаурму с нашими свежими ингредиентами</p>
+    </div>
+    
+    <div class="models-grid">
+        <div class="model-card">
+            <div class="model-img">
+                <img src="https://i.pinimg.com/originals/cf/dd/2e/cfdd2e941e766c51fa6113c1c17f3b81.jpg" alt="Классическая шаурма">
+            </div>
+            <div class="model-info">
+                <h3>Классическая шаурма</h3>
+                <p>Сочная курица, свежие овощи, лаваш и фирменный соус. Классика жанра!</p>
+                <div class="model-price">от 250 ₽</div>
+                <div class="ingredients-picker">
+                    <h4>Добавить ингредиенты:</h4>
+                    <div class="ingredients-options">
+                        <div class="ingredient-option active" data-product="1">Курица</div>
+                        <div class="ingredient-option" data-product="1">Говядина</div>
+                        <div class="ingredient-option" data-product="1">Свинина</div>
+                        <div class="ingredient-option" data-product="1">Сыр +50₽</div>
+                        <div class="ingredient-option" data-product="1">Грибы +30₽</div>
                     </div>
-                    <p>⚠️ Сохраните эти данные!</p>
                 </div>
-                <button onclick="closeSuccessModalAndReset()" class="btn-order">Продолжить покупки</button>
+            </div>
+        </div>
+        
+        <div class="model-card">
+            <div class="model-img">
+                <img src="https://static.tildacdn.com/stor6336-3463-4565-b063-653566633463/38836220.jpg" alt="Острая шаурма">
+            </div>
+            <div class="model-info">
+                <h3>Острая шаурма</h3>
+                <p>Для любителей поострее! Специи, острый перец и аджика по-кавказски.</p>
+                <div class="model-price">от 280 ₽</div>
+                <div class="ingredients-picker">
+                    <h4>Выберите остроту:</h4>
+                    <div class="ingredients-options">
+                        <div class="ingredient-option active" data-product="2">Средняя 🌶️</div>
+                        <div class="ingredient-option" data-product="2">Острая 🌶️🌶️</div>
+                        <div class="ingredient-option" data-product="2">Очень острая 🌶️🌶️🌶️</div>
+                        <div class="ingredient-option" data-product="2">Двойное мясо +100₽</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="model-card">
+            <div class="model-img">
+                <img src="https://cafehabibi.ru/d/vegan.jpg" alt="Вегетарианская шаурма">
+            </div>
+            <div class="model-info">
+                <h3>Вегетарианская шаурма</h3>
+                <p>Свежие овощи, грибы, сыр и соус песто. Без мяса, но очень вкусно!</p>
+                <div class="model-price">от 220 ₽</div>
+                <div class="ingredients-picker">
+                    <h4>Выберите основу:</h4>
+                    <div class="ingredients-options">
+                        <div class="ingredient-option active" data-product="3">Овощная</div>
+                        <div class="ingredient-option" data-product="3">С грибами</div>
+                        <div class="ingredient-option" data-product="3">С сыром +50₽</div>
+                        <div class="ingredient-option" data-product="3">Фалафель +70₽</div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
+</section>
 
-    <footer>
-        <p>&copy; 2024 Дёнерная "Вкусный Дёнер". Все права защищены.</p>
-    </footer>
+<!-- ========== ТАБЛИЦА СРАВНЕНИЯ ========== -->
+<section class="performance-models section">
+    <div class="section-title">
+        <h2>Сравнение наших позиций</h2>
+        <p>Калорийность и состав наших самых популярных позиций</p>
+    </div>
+    
+    <div class="table-container">
+        <table class="performance-table">
+            <thead>
+                <tr>
+                    <th>Позиция</th>
+                    <th>Вес</th>
+                    <th>Калории</th>
+                    <th>Основной ингредиент</th>
+                    <th>Время приготовления</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Классическая шаурма</td><td>350 г</td><td>450 ккал</td><td>Курица</td><td>5-7 мин</td></tr>
+                <tr><td>Острая шаурма</td><td>380 г</td><td>520 ккал</td><td>Говядина</td><td>6-8 мин</td></tr>
+                <tr><td>Вегетарианская</td><td>320 г</td><td>380 ккал</td><td>Овощи</td><td>4-6 мин</td></tr>
+                <tr><td>Дёнер в лаваше</td><td>400 г</td><td>550 ккал</td><td>Смешанное мясо</td><td>7-9 мин</td></tr>
+                <tr><td>Дёнер в лепёшке</td><td>420 г</td><td>580 ккал</td><td>Баранина</td><td>8-10 мин</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
 
-    <script>
-        // ========== ДАННЫЕ ТОВАРОВ ==========
-        const products = {
-            doner: [
-                { id: 1, name: "Дёнер классический", price: 250, image: "https://via.placeholder.com/200x150?text=Doner+Classic", description: "Классический дёнер с курицей" },
-                { id: 2, name: "Дёнер острый", price: 280, image: "https://via.placeholder.com/200x150?text=Doner+Spicy", description: "Острый дёнер с халапеньо" },
-                { id: 3, name: "Дёнер вегетарианский", price: 220, image: "https://via.placeholder.com/200x150?text=Doner+Veg", description: "С фалафелем и овощами" },
-                { id: 4, name: "Дёнер премиум", price: 350, image: "https://via.placeholder.com/200x150?text=Doner+Premium", description: "С говядиной и двойным сыром" },
-                { id: 5, name: "Дёнер в лаваше", price: 300, image: "https://via.placeholder.com/200x150?text=Doner+Lavash", description: "Традиционный в тонком лаваше" }
-            ],
-            rolls: [
-                { id: 6, name: "Ролл с курицей", price: 200, image: "https://via.placeholder.com/200x150?text=Roll+Chicken", description: "Сыр, курица, соус" },
-                { id: 7, name: "Ролл острый", price: 220, image: "https://via.placeholder.com/200x150?text=Roll+Spicy", description: "С острым соусом" },
-                { id: 8, name: "Ролл с говядиной", price: 280, image: "https://via.placeholder.com/200x150?text=Roll+Beef", description: "Говядина, сыр, овощи" }
-            ],
-            drinks: [
-                { id: 9, name: "Кола 0.5л", price: 80, image: "https://via.placeholder.com/200x150?text=Coca-Cola", description: "Coca-Cola 0.5л" },
-                { id: 10, name: "Сок 0.33л", price: 90, image: "https://via.placeholder.com/200x150?text=Juice", description: "Апельсиновый сок" },
-                { id: 11, name: "Вода 0.5л", price: 50, image: "https://via.placeholder.com/200x150?text=Water", description: "Питьевая вода" }
-            ]
+<!-- ========== ГАЛЕРЕЯ ========== -->
+<section id="gallery" class="gallery-section section">
+    <div class="section-title">
+        <h2>Наша шаурмечная</h2>
+        <p>Загляните на нашу кухню и почувствуйте атмосферу вкуса</p>
+    </div>
+    
+    <div class="gallery-container">
+        <div class="gallery-slider" id="gallerySlider">
+            <div class="gallery-slide active">
+                <img src="https://avatars.mds.yandex.net/i?id=d202eda8eaa2900ea519fb7ca66a8007_l-5276461-images-thumbs&n=13" alt="Кухня">
+                <div class="slide-content">
+                    <h3>Наша чистая кухня</h3>
+                    <p>Всегда свежие ингредиенты и строгое соблюдение санитарных норм.</p>
+                </div>
+            </div>
+            <div class="gallery-slide">
+                <img src="https://cast.kz/img/Post/_%D0%B2%D0%BA%20%D0%BF%D0%BE%D0%B2%D0%B0%D1%80.jpg" alt="Приготовление">
+                <div class="slide-content">
+                    <h3>Мастер-шаурмист за работой</h3>
+                    <p>Наши повара готовят каждую шаурму с любовью и вниманием к деталям.</p>
+                </div>
+            </div>
+            <div class="gallery-slide">
+                <img src="https://arh-predmet.by/wp-content/uploads/2024/12/7.webp" alt="Интерьер">
+                <div class="slide-content">
+                    <h3>Уютный интерьер</h3>
+                    <p>Комфортная атмосфера для тех, кто предпочитает есть на месте.</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="gallery-controls">
+            <button class="gallery-btn prev-btn" id="prevBtn">
+                <i class="fas fa-chevron-left"></i>
+            </button>
+            <button class="gallery-btn next-btn" id="nextBtn">
+                <i class="fas fa-chevron-right"></i>
+            </button>
+        </div>
+        
+        <div class="gallery-dots" id="galleryDots">
+            <span class="gallery-dot active" data-slide="0"></span>
+            <span class="gallery-dot" data-slide="1"></span>
+            <span class="gallery-dot" data-slide="2"></span>
+        </div>
+    </div>
+</section>
+
+<!-- ========== КАЛЬКУЛЯТОР СТОИМОСТИ ========== -->
+<section id="calculator" class="section">
+    <div class="section-title">
+        <h2>Калькулятор заказа</h2>
+        <p>Рассчитайте стоимость вашего заказа с учётом всех дополнений</p>
+    </div>
+    <div class="calculator">
+        <form class="calculator-form" id="price-calculator">
+            <div class="form-group">
+                <label for="product">Тип шаурмы</label>
+                <select id="product" name="product">
+                    <option value="1" data-price="250">Классическая (250 ₽)</option>
+                    <option value="2" data-price="280">Острая (280 ₽)</option>
+                    <option value="3" data-price="220">Вегетарианская (220 ₽)</option>
+                    <option value="4" data-price="350">Дёнер премиум (350 ₽)</option>
+                    <option value="5" data-price="300">Дёнер в лепёшке (300 ₽)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="quantity">Количество: <span id="quantityValue">1</span> шт.</label>
+                <input type="range" id="quantity" name="quantity" min="1" max="10" value="1">
+            </div>
+            <div class="form-group">
+                <label for="delivery">Доставка</label>
+                <select id="delivery" name="delivery">
+                    <option value="0">Самовывоз (бесплатно)</option>
+                    <option value="150">По району (150 ₽)</option>
+                    <option value="250">По городу (250 ₽)</option>
+                    <option value="400">Срочная доставка (400 ₽)</option>
+                </select>
+            </div>
+            <div class="form-group full-width">
+                <label>Дополнительно</label>
+                <div class="options-group">
+                    <div class="option-checkbox">
+                        <input type="checkbox" id="cheese" name="cheese" value="50">
+                        <label for="cheese">Доп. сыр (+50 ₽)</label>
+                    </div>
+                    <div class="option-checkbox">
+                        <input type="checkbox" id="sauce" name="sauce" value="30">
+                        <label for="sauce">Доп. соус (+30 ₽)</label>
+                    </div>
+                    <div class="option-checkbox">
+                        <input type="checkbox" id="meat" name="meat" value="100">
+                        <label for="meat">Двойное мясо (+100 ₽)</label>
+                    </div>
+                    <div class="option-checkbox">
+                        <input type="checkbox" id="set" name="set" value="150">
+                        <label for="set">Комбо (напиток+картошка) (+150 ₽)</label>
+                    </div>
+                </div>
+            </div>
+            <div class="calculator-result">
+                <h3>Итоговая стоимость</h3>
+                <div class="total-price" id="total-price">250 ₽</div>
+                <p class="hint" id="total-hint">(1 шт. классической × 250 ₽ + доставка 0 ₽)</p>
+            </div>
+        </form>
+    </div>
+</section>
+
+<!-- ФОРМА ЗАКАЗА -->
+ <section id="contact">
+        <h2>Оформить заказ</h2>
+        <div id="credentialsBlock" class="credentials-block" style="display:none;"></div>
+        <form id="orderForm" class="contact-form">
+            <div class="form-group"><label>Ваше имя *</label><input type="text" id="fullName" required></div>
+            <div class="form-group"><label>Телефон *</label><input type="tel" id="phone" required></div>
+            <div class="form-group"><label>Email *</label><input type="email" id="email" required></div>
+            <div class="form-group"><label>Адрес доставки *</label><input type="text" id="address" required></div>
+            <div class="form-group"><label>Пожелания</label><textarea id="message" rows="3"></textarea></div>
+            <button type="submit" class="btn">Отправить заказ</button>
+            <div id="formStatus" class="form-message"></div>
+        </form>
+    </section>
+
+    <!-- Блок "Мои заказы" (виден только авторизованным) -->
+    <div class="my-orders" id="myOrdersBlock" style="display: <?= $is_logged_in ? 'block' : 'none' ?>;">
+        <h3>Мои заказы</h3>
+        <div id="ordersList">Загрузка...</div>
+    </div>
+
+<!-- ========== FOOTER ========== -->
+<footer>
+    <div class="footer-content">
+        <div class="footer-logo"><i class="fas fa-utensils"></i> Дёнер<span>Королевский</span></div>
+        <ul class="footer-links">
+            <li><a href="#">Главная</a></li>
+            <li><a href="#menu">Меню</a></li>
+            <li><a href="#calculator">Калькулятор</a></li>
+            <li><a href="#gallery">Галерея</a></li>
+            <li><a href="#contact">Заказ</a></li>
+            <p><a href="admin_orders.php">Управление заказами (АДМИН)</a></p>
+        </ul>
+        <div class="quote-section">
+            <p class="inspiration-quote">
+                "Лучшая шаурма в городе! Сочное мясо, свежие овощи и идеальные соусы. Рекомендую!"
+            </p>
+        </div>
+        <div class="social-links">
+            <a href="#"><i class="fab fa-vk"></i></a>
+            <a href="#"><i class="fab fa-telegram"></i></a>
+            <a href="#"><i class="fab fa-instagram"></i></a>
+        </div>
+        <div class="copyright">
+            <p><i class="fas fa-clock"></i> Ежедневно с 10:00 до 23:00</p>
+            <p>© 2024 Дёнер "Королевский". Все права защищены.</p>
+        </div>
+    </div>
+</footer>
+
+<!-- ========== MODAL ========== -->
+<div class="modal-overlay" id="modalOverlay"></div>
+<div class="modal" id="contact-modal">
+    <div class="modal-content">
+        <span class="close-modal" id="closeModal">&times;</span>
+        <h2>Быстрый заказ</h2>
+        <!-- ФОРМА ИЗ ПЕРВОГО КОДА ДЛЯ МОДАЛЬНОГО ОКНА -->
+        <form id="modal-contact-form" action="https://formcarry.com/s/YhinEAy4WWS" method="POST" accept-charset="UTF-8">
+            <input type="hidden" name="_gotcha" style="display:none !important">
+            <div class="form-group">
+                <label for="modal-name">Ваше имя *</label>
+                <input type="text" id="modal-name" name="name" required minlength="2">
+            </div>
+            <div class="form-group">
+                <label for="modal-email">Электронная почта *</label>
+                <input type="email" id="modal-email" name="email" required>
+            </div>
+            <div class="form-group">
+                <label for="modal-message">Ваш заказ *</label>
+                <textarea id="modal-message" name="message" rows="4" required minlength="10" placeholder="Что вы хотите заказать?"></textarea>
+            </div>
+            <button type="submit" class="btn">Заказать сейчас</button>
+            <div class="form-message" id="modal-form-message"></div>
+        </form>
+    </div>
+</div>
+
+<script>
+
+
+// КАЛЬКУЛЯТОР 
+    const productSelect = document.getElementById('product');
+    const quantitySlider = document.getElementById('quantity');
+    const quantityValue = document.getElementById('quantityValue');
+    const deliverySelect = document.getElementById('delivery');
+    const totalPriceSpan = document.getElementById('total-price');
+    const hintSpan = document.getElementById('total-hint');
+    const cheeseChk = document.getElementById('cheese');
+    const sauceChk = document.getElementById('sauce');
+    const meatChk = document.getElementById('meat');
+    const setChk = document.getElementById('set');
+
+    function formatNumber(num) {
+        return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    }
+
+    function calculateTotal() {
+        const selectedOption = productSelect.options[productSelect.selectedIndex];
+        const productPrice = parseInt(selectedOption.dataset.price);
+        const quantity = parseInt(quantitySlider.value);
+        const deliveryCost = parseInt(deliverySelect.value);
+        let extraCost = 0;
+        if (cheeseChk.checked) extraCost += 50;
+        if (sauceChk.checked) extraCost += 30;
+        if (meatChk.checked) extraCost += 100;
+        if (setChk.checked) extraCost += 150;
+        const total = (productPrice + extraCost) * quantity + deliveryCost;
+        totalPriceSpan.innerText = formatNumber(total) + ' ₽';
+        quantityValue.innerText = quantity;
+        const productName = selectedOption.text.split(' (')[0];
+        let hintText = `(${quantity} шт. ${productName.toLowerCase()} × ${formatNumber(productPrice)} ₽`;
+        if (extraCost > 0) hintText += ` + дополнения ${formatNumber(extraCost)} ₽`;
+        if (deliveryCost > 0) hintText += ` + доставка ${formatNumber(deliveryCost)} ₽`;
+        hintText += `)`;
+        hintSpan.innerText = hintText;
+    }
+
+    productSelect.addEventListener('change', calculateTotal);
+    quantitySlider.addEventListener('input', calculateTotal);
+    deliverySelect.addEventListener('change', calculateTotal);
+    cheeseChk.addEventListener('change', calculateTotal);
+    sauceChk.addEventListener('change', calculateTotal);
+    meatChk.addEventListener('change', calculateTotal);
+    setChk.addEventListener('change', calculateTotal);
+    calculateTotal();
+
+    //  ОБЩИЕ ФУНКЦИИ 
+    function escapeHtml(str) {
+        if (!str) return '';
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+
+    let originalSubmitHandler = null; // для восстановления после редактирования
+
+    //  ЗАГРУЗКА СПИСКА ЗАКАЗОВ 
+    async function loadOrders() {
+        const container = document.getElementById('ordersList');
+        if (!container) return;
+        try {
+            const resp = await fetch('./index.php?route=orders');
+            const data = await resp.json();
+            if (data.status === 'ok' && data.orders.length) {
+                let html = '<ul style="list-style:none; padding:0;">';
+                data.orders.forEach(order => {
+                    html += `<li class="order-item" data-id="${order.id}">
+                        <span>Заказ №${order.id} от ${new Date(order.created_at).toLocaleString()} — ${order.total_price} ₽ (статус: ${order.status})</span>
+                        <div>
+                            <button class="edit-order-btn" data-id="${order.id}">✏️ Редактировать</button>
+                            <button class="delete-order-btn" data-id="${order.id}">🗑️ Удалить</button>
+                        </div>
+                    </li>`;
+                });
+                html += '</ul>';
+                container.innerHTML = html;
+
+                document.querySelectorAll('.edit-order-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const orderId = btn.dataset.id;
+                        loadOrderForEdit(orderId);
+                    });
+                });
+                document.querySelectorAll('.delete-order-btn').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        const orderId = btn.dataset.id;
+                        if (confirm(`Удалить заказ №${orderId}? Это действие нельзя отменить.`)) {
+                            try {
+                                const resp = await fetch(`./index.php?route=order&id=${orderId}&_method=DELETE`, {
+                                    method: 'POST'
+                                });
+                                const result = await resp.json();
+                                if (resp.ok && result.status === 'deleted') {
+                                    loadOrders();
+                                } else {
+                                    let errMsg = 'Ошибка удаления: ';
+                                    if (result.errors) errMsg += Object.values(result.errors).join(' ');
+                                    else errMsg += result.error || 'неизвестная ошибка';
+                                    alert(errMsg);
+                                }
+                            } catch (err) {
+                                alert('Ошибка сети. Попробуйте позже.');
+                                console.error(err);
+                            }
+                        }
+                    });
+                });
+            } else {
+                container.innerHTML = '<p>У вас пока нет заказов.</p>';
+            }
+        } catch(e) {
+            container.innerHTML = '<p>Ошибка загрузки заказов.</p>';
+            console.error(e);
+        }
+    }
+
+    //  РЕДАКТИРОВАНИЕ ЗАКАЗА 
+    async function loadOrderForEdit(orderId) {
+        try {
+            const resp = await fetch(`./index.php?route=order&id=${orderId}`);
+            const data = await resp.json();
+            if (data.status === 'ok') {
+                const order = data.order;
+                document.getElementById('fullName').value = order.full_name;
+                document.getElementById('phone').value = order.phone;
+                document.getElementById('email').value = order.email;
+                document.getElementById('address').value = order.address;
+                document.getElementById('message').value = order.message || '';
+                if (order.items && order.items.length) {
+                    const item = order.items[0];
+                    productSelect.value = item.product_id;
+                    quantitySlider.value = item.quantity;
+                    const opts = item.options || {};
+                    cheeseChk.checked = !!opts.cheese;
+                    sauceChk.checked = !!opts.sauce;
+                    meatChk.checked = !!opts.meat;
+                    setChk.checked = !!opts.set;
+                    if (order.delivery_cost !== undefined) {
+                        for (let i = 0; i < deliverySelect.options.length; i++) {
+                            if (parseInt(deliverySelect.options[i].value) === order.delivery_cost) {
+                                deliverySelect.selectedIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    calculateTotal();
+                }
+                // Переключаем форму в режим редактирования
+                const submitBtn = orderForm.querySelector('button');
+                submitBtn.innerText = 'Обновить заказ';
+                if (!document.getElementById('editOrderId')) {
+                    const hidden = document.createElement('input');
+                    hidden.type = 'hidden';
+                    hidden.id = 'editOrderId';
+                    hidden.value = orderId;
+                    orderForm.appendChild(hidden);
+                } else {
+                    document.getElementById('editOrderId').value = orderId;
+                }
+                // Сохраняем исходный обработчик, если ещё не сохранён
+                if (!originalSubmitHandler) {
+                    originalSubmitHandler = orderForm.onsubmit;
+                }
+                // Устанавливаем обработчик обновления
+                orderForm.onsubmit = async (e) => {
+                    e.preventDefault();
+                    const editId = document.getElementById('editOrderId').value;
+                    const full_name = document.getElementById('fullName').value.trim();
+                    const phone = document.getElementById('phone').value.trim();
+                    const email = document.getElementById('email').value.trim();
+                    const address = document.getElementById('address').value.trim();
+                    const message = document.getElementById('message').value.trim();
+                    const product_id = parseInt(productSelect.value);
+                    const quantity = parseInt(quantitySlider.value);
+                    const delivery_cost = parseInt(deliverySelect.value);
+                    const options = {};
+                    if (cheeseChk.checked) options.cheese = true;
+                    if (sauceChk.checked) options.sauce = true;
+                    if (meatChk.checked) options.meat = true;
+                    if (setChk.checked) options.set = true;
+                    const updateData = {
+                        full_name, phone, email, address, message, delivery_cost,
+                        items: [{ product_id, quantity, options }],
+                        _method: 'PUT'
+                    };
+                    statusDiv.innerHTML = '⏳ Обновление...';
+                    try {
+                        const resp = await fetch(`./index.php?route=order&id=${editId}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(updateData)
+                        });
+                        const res = await resp.json();
+                        if (resp.ok && res.status === 'updated') {
+                            statusDiv.innerHTML = '✅ Заказ обновлён!';
+                            statusDiv.className = 'form-message success';
+                            // Возвращаем форму в исходное состояние
+                            orderForm.reset();
+                            document.getElementById('editOrderId').remove();
+                            submitBtn.innerText = 'Отправить заказ';
+                            orderForm.onsubmit = originalSubmitHandler;
+                            calculateTotal(); // сброс калькулятора
+                            loadOrders(); // обновляем список заказов
+                        } else {
+                            let errMsg = 'Ошибка обновления: ';
+                            if (res.errors) errMsg += Object.values(res.errors).join(' ');
+                            else errMsg += res.error || 'неизвестная ошибка';
+                            statusDiv.innerHTML = '❌ ' + errMsg;
+                            statusDiv.className = 'form-message error';
+                        }
+                    } catch (err) {
+                        statusDiv.innerHTML = '❌ Ошибка сети';
+                        statusDiv.className = 'form-message error';
+                    } finally {
+                        setTimeout(() => statusDiv.innerHTML = '', 3000);
+                    }
+                };
+                window.scrollTo({ top: document.getElementById('contact').offsetTop - 80, behavior: 'smooth' });
+            }
+        } catch (e) { console.error(e); }
+    }
+
+    //ОТПРАВКА НОВОГО ЗАКАЗА 
+    const orderForm = document.getElementById('orderForm');
+    const statusDiv = document.getElementById('formStatus');
+    const credBlock = document.getElementById('credentialsBlock');
+    const myOrdersBlock = document.getElementById('myOrdersBlock');
+
+    async function submitNewOrder(orderData) {
+        try {
+            const response = await fetch('./index.php?route=order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(orderData)
+            });
+            const text = await response.text();
+            console.log('Ответ сервера:', text);
+            let result;
+            try {
+                result = JSON.parse(text);
+            } catch (jsonError) {
+                statusDiv.innerHTML = '❌ Сервер вернул не JSON: ' + text.substring(0, 100);
+                statusDiv.className = 'form-message error';
+                return false;
+            }
+            if (response.ok && result.status === 'ok') {
+                statusDiv.innerHTML = '✅ Заказ принят!';
+                statusDiv.className = 'form-message success';
+                if (result.login && result.password) {
+                    credBlock.innerHTML = `<h3>Ваши данные для входа</h3>
+                        <p><strong>Логин:</strong> ${escapeHtml(result.login)}</p>
+                        <p><strong>Пароль:</strong> ${escapeHtml(result.password)}</p>
+                        <p><a href="login.php">Войти</a> для редактирования.</p>`;
+                    credBlock.style.display = 'block';
+                    if (myOrdersBlock) myOrdersBlock.style.display = 'block';
+                    await loadOrders();
+                } else {
+                    credBlock.style.display = 'none';
+                    if (myOrdersBlock && myOrdersBlock.style.display !== 'none') {
+                        await loadOrders();
+                    }
+                }
+                return true;
+            } else {
+                let errMsg = 'Ошибка: ';
+                if (result.errors) errMsg += Object.values(result.errors).join(' ');
+                else errMsg += result.error || 'Неизвестная ошибка';
+                statusDiv.innerHTML = '❌ ' + errMsg;
+                statusDiv.className = 'form-message error';
+                return false;
+            }
+        } catch (err) {
+            console.error('Fetch error:', err);
+            statusDiv.innerHTML = '❌ Ошибка сети. Проверьте соединение.';
+            statusDiv.className = 'form-message error';
+            return false;
+        }
+    }
+
+    // Основной обработчик формы (создание нового заказа)
+    originalSubmitHandler = async (e) => {
+        e.preventDefault();
+        const full_name = document.getElementById('fullName').value.trim();
+        const phone = document.getElementById('phone').value.trim();
+        const email = document.getElementById('email').value.trim();
+        const address = document.getElementById('address').value.trim();
+        const message = document.getElementById('message').value.trim();
+        const product_id = parseInt(productSelect.value);
+        const quantity = parseInt(quantitySlider.value);
+        const delivery_cost = parseInt(deliverySelect.value);
+        const options = {};
+        if (cheeseChk.checked) options.cheese = true;
+        if (sauceChk.checked) options.sauce = true;
+        if (meatChk.checked) options.meat = true;
+        if (setChk.checked) options.set = true;
+
+        const orderData = {
+            full_name, phone, email, address, message, delivery_cost,
+            items: [{ product_id, quantity, options }]
         };
 
-        // Корзина
-        let cart = JSON.parse(localStorage.getItem('cart')) || [];
-        let selectedDeliveryCost = 0;
+        statusDiv.innerHTML = '⏳ Отправка...';
+        statusDiv.className = 'form-message sending';
+        const submitBtn = orderForm.querySelector('button');
+        submitBtn.disabled = true;
 
-        // Функции корзины
-        function saveCart() {
-            localStorage.setItem('cart', JSON.stringify(cart));
-            updateCartDisplay();
+        const success = await submitNewOrder(orderData);
+        if (success) {
+            orderForm.reset();
+            quantitySlider.value = 1;
+            calculateTotal();
         }
+        submitBtn.disabled = false;
+        setTimeout(() => {
+            if (statusDiv.className !== 'form-message error') statusDiv.innerHTML = '';
+        }, 5000);
+    };
 
-        function updateCartDisplay() {
-            const count = cart.reduce((sum, item) => sum + item.quantity, 0);
-            document.getElementById('cart-count').textContent = count;
-            
-            const total = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0) + selectedDeliveryCost;
-            const totalElement = document.getElementById('cart-total');
-            if (totalElement) totalElement.textContent = total;
+    orderForm.onsubmit = originalSubmitHandler;
+
+    // Если пользователь авторизован, загружаем заказы
+    <?php if ($is_logged_in): ?>
+        loadOrders();
+    <?php endif; ?>
+
+
+
+
+ document.addEventListener('DOMContentLoaded', function() {
+ const isLoggedIn = <?= json_encode($is_logged_in) ?>;
+  // ========== МОБИЛЬНОЕ МЕНЮ ==========
+    const burgerBtn = document.getElementById('burgerBtn');
+    const mobileMenu = document.createElement('div');
+    const mobileOverlay = document.createElement('div');
+    
+    if (burgerBtn) {
+        mobileMenu.className = 'mobile-menu';
+        let menuItems = `
+            <button class="menu-close" id="menuClose"><i class="fas fa-times"></i></button>
+            <ul>
+                <li><a href="#"><i class="fas fa-home"></i> Главная</a></li>
+                <li><a href="#menu"><i class="fas fa-hamburger"></i> Меню</a></li>
+                <li><a href="#calculator"><i class="fas fa-calculator"></i> Калькулятор</a></li>
+                <li><a href="#gallery"><i class="fas fa-images"></i> Галерея</a></li>
+                <li><a href="#contact"><i class="fas fa-address-book"></i> Заказ</a></li>
+        `;
+        if (isLoggedIn) {
+            menuItems += `<li><a href="logout.php"><i class="fas fa-sign-out-alt"></i> Выйти</a></li>`;
+        } else {
+            menuItems += `<li><a href="login.php"><i class="fas fa-sign-in-alt"></i> Войти</a></li>`;
         }
-
-        function addToCart(product, category) {
-            const existing = cart.find(item => item.id === product.id);
-            if (existing) {
-                existing.quantity++;
-            } else {
-                cart.push({
-                    id: product.id,
-                    name: product.name,
-                    price: product.price,
-                    quantity: 1,
-                    category: category
-                });
-            }
-            saveCart();
-            showNotification('Добавлено в корзину!');
-        }
-
-        function showNotification(msg) {
-            const notif = document.createElement('div');
-            notif.textContent = msg;
-            notif.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#2e7d32;color:white;padding:12px 20px;border-radius:8px;z-index:9999;';
-            document.body.appendChild(notif);
-            setTimeout(() => notif.remove(), 2000);
-        }
-
-        function openCartModal() {
-            const modal = document.getElementById('cartModal');
-            renderCartItems();
-            modal.style.display = 'flex';
-        }
-
-        function closeCartModal() {
-            document.getElementById('cartModal').style.display = 'none';
-        }
-
-        function renderCartItems() {
-            const container = document.getElementById('cart-items');
-            if (!container) return;
-            
-            if (cart.length === 0) {
-                container.innerHTML = '<p>Корзина пуста</p>';
-                return;
-            }
-            
-            let html = '';
-            cart.forEach((item, index) => {
-                html += `
-                    <div class="order-item">
-                        <strong>${item.name}</strong><br>
-                        ${item.price} ₽ × 
-                        <button onclick="changeQuantity(${index}, -1)">-</button>
-                        ${item.quantity}
-                        <button onclick="changeQuantity(${index}, 1)">+</button>
-                        <button onclick="removeFromCart(${index})" style="background:#c62828;color:white;border:none;border-radius:4px;padding:2px 8px;margin-left:10px;">✕</button>
-                        = ${item.price * item.quantity} ₽
-                    </div>
-                `;
-            });
-            container.innerHTML = html;
-            updateCartDisplay();
-        }
-
-        function changeQuantity(index, delta) {
-            cart[index].quantity += delta;
-            if (cart[index].quantity <= 0) {
-                cart.splice(index, 1);
-            }
-            saveCart();
-            renderCartItems();
-        }
-
-        function removeFromCart(index) {
-            cart.splice(index, 1);
-            saveCart();
-            renderCartItems();
-        }
-
-        function selectDelivery(element, cost) {
-            document.querySelectorAll('.delivery-option').forEach(opt => opt.classList.remove('selected'));
-            element.classList.add('selected');
-            selectedDeliveryCost = cost;
-            document.getElementById('delivery_cost').value = cost;
-            updateCartDisplay();
-        }
-
-        function openOrderForm() {
-            if (cart.length === 0) {
-                alert('Корзина пуста');
-                return;
-            }
-            closeCartModal();
-            document.getElementById('orderFormModal').style.display = 'flex';
-        }
-
-        function closeOrderForm() {
-            document.getElementById('orderFormModal').style.display = 'none';
-        }
-
-        // Отправка заказа
-        document.getElementById('orderForm')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const formData = new FormData(e.target);
-            const items = cart.map(item => ({
-                product_id: item.id,
-                quantity: item.quantity,
-                options: {}
-            }));
-            
-            const orderData = {
-                full_name: formData.get('full_name'),
-                phone: formData.get('phone'),
-                email: formData.get('email'),
-                address: formData.get('address'),
-                message: formData.get('message') || '',
-                delivery_cost: parseInt(formData.get('delivery_cost')) || 0,
-                items: items
-            };
-            
-            try {
-                const response = await fetch('./api.php?route=order', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(orderData)
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok && result.status === 'ok') {
-                    document.getElementById('order-id').textContent = result.order_id;
-                    document.getElementById('order-total').textContent = result.total;
-                    
-                    if (result.login && result.password) {
-                        document.getElementById('generated-login').textContent = result.login;
-                        document.getElementById('generated-password').textContent = result.password;
-                        document.getElementById('credentials-block').style.display = 'block';
-                    } else {
-                        document.getElementById('credentials-block').style.display = 'none';
-                    }
-                    
-                    closeOrderForm();
-                    document.getElementById('successModal').style.display = 'flex';
-                    cart = [];
-                    saveCart();
-                } else {
-                    let errorMsg = 'Ошибка при оформлении заказа\n';
-                    if (result.errors) {
-                        errorMsg += Object.values(result.errors).join('\n');
-                    }
-                    alert(errorMsg);
-                }
-            } catch (error) {
-                alert('Ошибка сети: ' + error.message);
-            }
+        menuItems += `<li><a href="#contact" id="mobile-contact-btn" class="btn"><i class="fas fa-phone-alt"></i> Заказать</a></li>
+            </ul>
+        `;
+        mobileMenu.innerHTML = menuItems;
+        
+        mobileOverlay.className = 'mobile-overlay';
+        
+        document.body.appendChild(mobileMenu);
+        document.body.appendChild(mobileOverlay);
+        
+        const menuCloseBtn = document.getElementById('menuClose');
+        const mobileContactBtn = document.getElementById('mobile-contact-btn');
+        
+        burgerBtn.addEventListener('click', function() {
+            mobileMenu.classList.add('active');
+            mobileOverlay.classList.add('active');
+            burgerBtn.classList.add('active');
+            document.body.style.overflow = 'hidden';
         });
         
-        function closeSuccessModal() {
-            document.getElementById('successModal').style.display = 'none';
+        function closeMobileMenu() {
+            mobileMenu.classList.remove('active');
+            mobileOverlay.classList.remove('active');
+            burgerBtn.classList.remove('active');
+            document.body.style.overflow = '';
         }
         
-        function closeSuccessModalAndReset() {
-            closeSuccessModal();
-            location.reload();
-        }
+        menuCloseBtn.addEventListener('click', closeMobileMenu);
+        mobileOverlay.addEventListener('click', closeMobileMenu);
         
-        // Рендер товаров
-        function renderProducts() {
-            const donerContainer = document.getElementById('doner-products');
-            const rollsContainer = document.getElementById('rolls-products');
-            const drinksContainer = document.getElementById('drinks-products');
-            
-            if (donerContainer) {
-                donerContainer.innerHTML = products.doner.map(p => `
-                    <div class="product-card">
-                        <img src="${p.image}" alt="${p.name}">
-                        <h3>${p.name}</h3>
-                        <p>${p.description}</p>
-                        <p class="price">${p.price} ₽</p>
-                        <button onclick='addToCart(${JSON.stringify(p)},"doner")'>В корзину</button>
-                    </div>
-                `).join('');
-            }
-            
-            if (rollsContainer) {
-                rollsContainer.innerHTML = products.rolls.map(p => `
-                    <div class="product-card">
-                        <img src="${p.image}" alt="${p.name}">
-                        <h3>${p.name}</h3>
-                        <p>${p.description}</p>
-                        <p class="price">${p.price} ₽</p>
-                        <button onclick='addToCart(${JSON.stringify(p)},"rolls")'>В корзину</button>
-                    </div>
-                `).join('');
-            }
-            
-            if (drinksContainer) {
-                drinksContainer.innerHTML = products.drinks.map(p => `
-                    <div class="product-card">
-                        <img src="${p.image}" alt="${p.name}">
-                        <h3>${p.name}</h3>
-                        <p>${p.description}</p>
-                        <p class="price">${p.price} ₽</p>
-                        <button onclick='addToCart(${JSON.stringify(p)},"drinks")'>В корзину</button>
-                    </div>
-                `).join('');
-            }
-        }
+        mobileMenu.querySelectorAll('a').forEach(link => {
+            link.addEventListener('click', closeMobileMenu);
+        });
         
-        // Табы меню
-        function initTabs() {
-            const tabs = document.querySelectorAll('.menu-tab');
-            tabs.forEach(tab => {
-                tab.addEventListener('click', () => {
-                    tabs.forEach(t => t.classList.remove('active'));
-                    tab.classList.add('active');
-                    
-                    document.querySelectorAll('.menu-section').forEach(section => {
-                        section.classList.remove('active');
-                    });
-                    
-                    const sectionId = tab.dataset.tab + '-section';
-                    document.getElementById(sectionId).classList.add('active');
-                });
+        if (mobileContactBtn) {
+            mobileContactBtn.addEventListener('click', function(e) {
+                e.preventDefault();
+                closeMobileMenu();
+                openModal();
             });
         }
-        
-        function scrollToMenu() {
-            document.getElementById('menu').scrollIntoView({ behavior: 'smooth' });
-        }
-        
-        // Галерея
-        function initGallery() {
-            const galleryContainer = document.querySelector('.gallery-container');
-            if (galleryContainer) {
-                const images = [
-                    'https://via.placeholder.com/300x200?text=Doner+1',
-                    'https://via.placeholder.com/300x200?text=Doner+2',
-                    'https://via.placeholder.com/300x200?text=Doner+3',
-                    'https://via.placeholder.com/300x200?text=Doner+4'
-                ];
-                galleryContainer.innerHTML = images.map(img => `
-                    <div class="gallery-item">
-                        <img src="${img}" alt="Дёнер">
-                    </div>
-                `).join('');
-            }
-        }
-        
-        // Мобильное меню
-        function initMobileMenu() {
-            const btn = document.querySelector('.mobile-menu-btn');
-            const nav = document.querySelector('nav ul');
-            if (btn && nav) {
-                btn.addEventListener('click', () => {
-                    nav.classList.toggle('show');
-                });
-            }
-        }
-        
-        // Инициализация
-        document.addEventListener('DOMContentLoaded', () => {
-            renderProducts();
-            initTabs();
-            initGallery();
-            initMobileMenu();
-            updateCartDisplay();
-            
-            // Выбрать доставку по умолчанию
-            const defaultDelivery = document.querySelector('.delivery-option');
-            if (defaultDelivery) {
-                defaultDelivery.classList.add('selected');
-                selectedDeliveryCost = 0;
-                document.getElementById('delivery_cost').value = 0;
-            }
-        });
-    </script>
+    }
+    });
+
+
+</script>
+<script src="old.js"></script>
+<script src="gallery.js"></script>
+<script src="ingridient.js"></script>
+<script src="mobileMenu.js"></script>
 </body>
 </html>
