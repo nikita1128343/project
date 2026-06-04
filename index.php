@@ -1,4 +1,35 @@
 <?php
+// Обработка AJAX запросов от формы заказа
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_CONTENT_TYPE']) && strpos($_SERVER['HTTP_CONTENT_TYPE'], 'application/json') !== false) {
+    header('Content-Type: application/json');
+    
+    $input = json_decode(file_get_contents('php://input'), true);
+    
+    if (!$input) {
+        echo json_encode(['error' => 'Нет данных']);
+        exit;
+    }
+    
+    // Просто сохраняем заказ в файл для начала
+    $order_data = [
+        'time' => date('Y-m-d H:i:s'),
+        'data' => $input
+    ];
+    
+    $log_file = 'orders.json';
+    $existing = file_exists($log_file) ? json_decode(file_get_contents($log_file), true) : [];
+    $existing[] = $order_data;
+    file_put_contents($log_file, json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    
+    echo json_encode([
+        'status' => 'ok',
+        'order_id' => time(),
+        'message' => 'Заказ принят',
+        'login' => 'user_' . rand(1000, 9999),
+        'password' => substr(md5(rand()), 0, 8)
+    ]);
+    exit;
+}
 session_start();
 $is_logged_in = isset($_SESSION['application_id']);
 $user_id = $is_logged_in ? $_SESSION['application_id'] : null;

@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         try {
             // ВАЖНО: используй правильный путь!
-            const response = await fetch('api.php', {
+            const response = await fetch(window.location.href, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
