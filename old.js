@@ -16,10 +16,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 product_id: parseInt(document.getElementById('product').value, 10),
                 quantity: parseInt(document.getElementById('quantity').value, 10),
                 options: {
-                    cheese: document.getElementById('cheese').checked,
-                    sauce: document.getElementById('sauce').checked,
-                    meat: document.getElementById('meat').checked,
-                    set: document.getElementById('set').checked
+                    cheese: document.getElementById('cheese').checked ? 1 : 0,
+                    sauce: document.getElementById('sauce').checked ? 1 : 0,
+                    meat: document.getElementById('meat').checked ? 1 : 0,
+                    set: document.getElementById('set').checked ? 1 : 0
                 }
             }]
         };
@@ -30,7 +30,7 @@ document.addEventListener('DOMContentLoaded', function() {
         statusDiv.style.display = 'block';
 
         try {
-            const response = await fetch('./index.php?route=order', {
+            const response = await fetch('./api.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
